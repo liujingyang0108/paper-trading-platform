@@ -50,18 +50,24 @@ class Store:
                 (key, payload),
             )
 
-    def save_quote(self, quote: Dict[str, Any]) -> None:
+    def save_quote(self, quote: Dict[str, Any]) -> bool:
         payload = json.dumps(quote, ensure_ascii=False, separators=(",", ":"))
         with self.lock, self.connection:
+            previous = self.connection.execute(
+                "SELECT timestamp FROM quotes WHERE symbol=?", (quote["symbol"],)
+            ).fetchone()
             self.connection.execute(
                 "INSERT INTO quotes(symbol,payload,timestamp) VALUES(?,?,?) "
                 "ON CONFLICT(symbol) DO UPDATE SET payload=excluded.payload,timestamp=excluded.timestamp",
                 (quote["symbol"], payload, quote["timestamp"]),
             )
-            self.connection.execute(
-                "INSERT INTO quote_history(symbol,payload,timestamp) VALUES(?,?,?)",
-                (quote["symbol"], payload, quote["timestamp"]),
-            )
+            is_new_tick = previous is None or previous["timestamp"] != quote["timestamp"]
+            if is_new_tick:
+                self.connection.execute(
+                    "INSERT INTO quote_history(symbol,payload,timestamp) VALUES(?,?,?)",
+                    (quote["symbol"], payload, quote["timestamp"]),
+                )
+        return is_new_tick
 
     def quotes(self) -> List[Dict[str, Any]]:
         with self.lock:
@@ -116,4 +122,3 @@ class Store:
                 (after_id, min(max(limit, 1), 5000)),
             ).fetchall()
         return [{"id": r["id"], "kind": r["kind"], "payload": json.loads(r["payload"]), "created_at": r["created_at"]} for r in rows]
-

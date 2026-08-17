@@ -68,9 +68,10 @@ class Broker:
         if not quote.symbol or min(quote.bid, quote.ask, quote.last) <= 0 or quote.ask < quote.bid:
             raise ValidationError("invalid quote")
         self._settle_positions(self._market_date_from_timestamp(quote.timestamp))
-        self.store.save_quote(quote.to_dict())
-        self.store.event("QUOTE", quote.to_dict(), utc_now())
-        self._match_open_orders(quote)
+        is_new_tick = self.store.save_quote(quote.to_dict())
+        if is_new_tick:
+            self.store.event("QUOTE", quote.to_dict(), utc_now())
+            self._match_open_orders(quote)
         return quote.to_dict()
 
     def account(self) -> Dict[str, Any]:
