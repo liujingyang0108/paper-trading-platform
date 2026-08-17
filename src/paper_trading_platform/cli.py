@@ -12,6 +12,7 @@ from pathlib import Path
 from .api import serve
 from .broker import Broker
 from .store import Store
+from .feeds.tencent import run_feed as tencent_feed
 
 
 def load_config(path: str) -> dict:
@@ -47,13 +48,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Paper trading platform")
     parser.add_argument("--config", default="config.json")
     parser.add_argument("--synthetic", action="store_true", help="run deterministic demo market feed")
+    parser.add_argument("--feed", choices=("none", "synthetic", "tencent"), default="none")
     parser.add_argument("--symbols", default="510300.SH,510500.SH,159915.SZ")
     parser.add_argument("--interval", type=float, default=1.0)
     args = parser.parse_args()
     cfg = load_config(args.config)
     broker = Broker(Store(cfg["database"]), cfg)
-    if args.synthetic:
+    selected_feed = "synthetic" if args.synthetic else args.feed
+    if selected_feed == "synthetic":
         threading.Thread(target=synthetic_feed, args=(broker, args.symbols.split(","), args.interval, 7), daemon=True).start()
+    elif selected_feed == "tencent":
+        threading.Thread(target=tencent_feed, args=(broker, args.symbols.split(","), args.interval), daemon=True).start()
     serve(broker, cfg.get("host", "127.0.0.1"), int(cfg.get("port", 8800)))
 
 

@@ -11,6 +11,7 @@
 - A 股 T+1 可卖数量、100 股买入单位、连续竞价时段和科创板禁买
 - 账户、持仓、盈亏、订单、行情历史 HTTP API
 - 可重复的合成实时行情，用于本地联调
+- 腾讯公开行情适配器，可用真实价格驱动虚拟资金模拟交易
 
 ## 启动
 
@@ -21,6 +22,14 @@ python3 -m venv .venv
 pip install -e .
 paper-platform --config config.json --synthetic
 ```
+
+使用真实公开行情驱动模拟盘（不连接真实账户）：
+
+```bash
+paper-platform --config config.json --feed tencent --symbols 510300.SH,510500.SH,159915.SZ --interval 3
+```
+
+该适配器的数据标记为 `source=public_web`，可用于模拟交易观察，但因其不是已确认授权的数据服务，学习管线禁止它自动晋级策略。正式研究应替换为券商或授权数据商适配器。
 
 服务默认位于 `http://127.0.0.1:8800`。
 
