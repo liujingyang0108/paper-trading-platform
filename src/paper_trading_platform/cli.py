@@ -36,6 +36,7 @@ def synthetic_feed(broker: Broker, symbols: list, interval: float, seed: int) ->
                 "upper_limit": round(previous_closes[symbol] * 1.1, 4),
                 "lower_limit": round(previous_closes[symbol] * 0.9, 4),
                 "trading_status": "TRADING",
+                "source": "synthetic",
                 "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             })
         step += 1

@@ -23,6 +23,7 @@ class Quote:
     upper_limit: Optional[float] = None
     lower_limit: Optional[float] = None
     trading_status: str = "TRADING"
+    source: str = "unknown"
     timestamp: str = field(default_factory=utc_now)
 
     @classmethod
