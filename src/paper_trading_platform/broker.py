@@ -1,23 +1,29 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from typing import Any, Dict, List, Tuple
+from zoneinfo import ZoneInfo
 
 from .models import Order, Quote, utc_now
 from .store import Store
 
 
 DEFAULT_CONFIG = {
-    "initial_cash": 1_000_000,
+    "initial_cash": 100_000,
     "commission_rate": 0.0003,
     "minimum_commission": 5,
     "sell_tax_rate": 0.0005,
     "slippage_bps": 2,
-    "max_order_value": 100_000,
+    "max_order_value": 20_000,
     "max_symbol_weight": 0.2,
     "max_gross_exposure": 0.8,
     "max_daily_loss": 0.03,
     "quote_stale_seconds": 30,
+    "buy_lot_size": 100,
+    "t_plus_one": True,
+    "block_star_market": True,
+    "enforce_trading_hours": True,
+    "timezone": "Asia/Shanghai",
 }
 
 
@@ -30,12 +36,38 @@ class Broker:
         self.store = store
         self.config = {**DEFAULT_CONFIG, **config}
         if self.store.state_get("account", None) is None:
-            self.store.state_set("account", {"cash": float(self.config["initial_cash"]), "positions": {}, "realized_pnl": 0.0, "fees": 0.0})
+            self.store.state_set("account", {
+                "cash": float(self.config["initial_cash"]), "positions": {},
+                "realized_pnl": 0.0, "fees": 0.0,
+                "settlement_date": self._market_now().date().isoformat(),
+            })
+
+    def _market_now(self) -> datetime:
+        return datetime.now(ZoneInfo(self.config["timezone"]))
+
+    def _market_date_from_timestamp(self, timestamp: str) -> str:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        return parsed.astimezone(ZoneInfo(self.config["timezone"])).date().isoformat()
+
+    def _settle_positions(self, market_date: str) -> None:
+        account = self.store.state_get("account", {})
+        last = account.get("settlement_date", market_date)
+        changed = False
+        if market_date > last:
+            for position in account.get("positions", {}).values():
+                position["available_quantity"] = position.get("available_quantity", 0) + position.get("today_bought", 0)
+                position["today_bought"] = 0
+            account["settlement_date"] = market_date
+            changed = True
+        if changed:
+            self.store.state_set("account", account)
+            self.store.event("DAILY_SETTLEMENT", {"market_date": market_date}, utc_now())
 
     def ingest_quote(self, raw: Dict[str, Any]) -> Dict[str, Any]:
         quote = Quote.from_dict(raw)
         if not quote.symbol or min(quote.bid, quote.ask, quote.last) <= 0 or quote.ask < quote.bid:
             raise ValidationError("invalid quote")
+        self._settle_positions(self._market_date_from_timestamp(quote.timestamp))
         self.store.save_quote(quote.to_dict())
         self.store.event("QUOTE", quote.to_dict(), utc_now())
         self._match_open_orders(quote)
@@ -63,6 +95,7 @@ class Broker:
         if existing:
             return existing, False
         self._validate_order(order)
+        self._validate_market_session()
         quote_raw = self.store.quote(order.symbol)
         if not quote_raw:
             raise ValidationError("no quote for symbol")
@@ -95,6 +128,21 @@ class Broker:
             raise ValidationError("unsupported order type")
         if order.order_type == "limit" and (order.limit_price is None or order.limit_price <= 0):
             raise ValidationError("positive limit_price required")
+        code = order.symbol.split(".", 1)[0]
+        if self.config["block_star_market"] and code.startswith(("688", "689")):
+            raise ValidationError("STAR Market trading is disabled")
+        if order.side == "buy" and order.quantity % int(self.config["buy_lot_size"]) != 0:
+            raise ValidationError(f"buy quantity must be a multiple of {self.config['buy_lot_size']}")
+
+    def _validate_market_session(self) -> None:
+        if not self.config["enforce_trading_hours"]:
+            return
+        now = self._market_now()
+        current = now.time().replace(tzinfo=None)
+        morning = time(9, 30) <= current <= time(11, 30)
+        afternoon = time(13, 0) <= current <= time(15, 0)
+        if now.weekday() >= 5 or not (morning or afternoon):
+            raise ValidationError("outside A-share continuous trading session")
 
     def _validate_quote_age(self, quote: Dict[str, Any]) -> None:
         timestamp = datetime.fromisoformat(quote["timestamp"].replace("Z", "+00:00"))
@@ -123,6 +171,10 @@ class Broker:
         resulting = current + order.quantity if order.side == "buy" else current - order.quantity
         if resulting < 0:
             raise ValidationError("short selling disabled or insufficient position")
+        if order.side == "sell":
+            available = account["positions"].get(order.symbol, {}).get("available_quantity", current)
+            if order.quantity > available:
+                raise ValidationError("T+1 restriction: sell quantity exceeds available quantity")
         equity = account["equity"]
         if order.side == "buy":
             fee = max(value * self.config["commission_rate"], self.config["minimum_commission"])
@@ -153,7 +205,10 @@ class Broker:
     def _apply_fill(self, order: Order, quantity: int, price: float) -> None:
         account = self.store.state_get("account", {})
         positions = account.setdefault("positions", {})
-        position = positions.setdefault(order.symbol, {"quantity": 0, "average_cost": 0.0})
+        position = positions.setdefault(order.symbol, {
+            "quantity": 0, "average_cost": 0.0,
+            "available_quantity": 0, "today_bought": 0,
+        })
         value = price * quantity
         commission = max(value * self.config["commission_rate"], self.config["minimum_commission"])
         tax = value * self.config["sell_tax_rate"] if order.side == "sell" else 0
@@ -161,12 +216,17 @@ class Broker:
         if order.side == "buy":
             old_value = position["quantity"] * position["average_cost"]
             position["quantity"] += quantity
+            if self.config["t_plus_one"]:
+                position["today_bought"] = position.get("today_bought", 0) + quantity
+            else:
+                position["available_quantity"] = position.get("available_quantity", 0) + quantity
             position["average_cost"] = round((old_value + value) / position["quantity"], 6)
             account["cash"] -= value + fee
         else:
             account["cash"] += value - fee
             account["realized_pnl"] += (price - position["average_cost"]) * quantity - fee
             position["quantity"] -= quantity
+            position["available_quantity"] -= quantity
         account["fees"] += fee
         if position["quantity"] == 0:
             positions.pop(order.symbol)

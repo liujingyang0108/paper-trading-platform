@@ -19,6 +19,10 @@ class Quote:
     bid_size: float = 0
     ask_size: float = 0
     volume: float = 0
+    previous_close: Optional[float] = None
+    upper_limit: Optional[float] = None
+    lower_limit: Optional[float] = None
+    trading_status: str = "TRADING"
     timestamp: str = field(default_factory=utc_now)
 
     @classmethod
@@ -53,4 +57,3 @@ class Order:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-

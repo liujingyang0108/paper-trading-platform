@@ -21,6 +21,7 @@ def load_config(path: str) -> dict:
 def synthetic_feed(broker: Broker, symbols: list, interval: float, seed: int) -> None:
     rng = random.Random(seed)
     prices = {symbol: 10.0 + index * 7 for index, symbol in enumerate(symbols)}
+    previous_closes = dict(prices)
     step = 0
     while True:
         for index, symbol in enumerate(symbols):
@@ -31,6 +32,10 @@ def synthetic_feed(broker: Broker, symbols: list, interval: float, seed: int) ->
                 "symbol": symbol, "bid": round(prices[symbol] - spread / 2, 4),
                 "ask": round(prices[symbol] + spread / 2, 4), "last": round(prices[symbol], 4),
                 "bid_size": 10000, "ask_size": 10000, "volume": step * 10000,
+                "previous_close": previous_closes[symbol],
+                "upper_limit": round(previous_closes[symbol] * 1.1, 4),
+                "lower_limit": round(previous_closes[symbol] * 0.9, 4),
+                "trading_status": "TRADING",
                 "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             })
         step += 1
@@ -53,4 +58,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
